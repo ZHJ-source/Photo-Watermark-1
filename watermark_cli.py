@@ -8,22 +8,6 @@ from PIL import Image, ImageDraw, ImageFont, ExifTags
 import piexif
 import glob
 
-# 尝试导入pyheif以支持HEIC格式
-try:
-    import pyheif
-    has_pyheif = True
-except ImportError:
-    has_pyheif = False
-    print("警告：未安装pyheif库，可能无法处理HEIC格式图片")
-    print("提示：如需处理HEIC格式图片，请先安装系统依赖：brew install libheif")
-    print("然后安装Python依赖：pip install pyheif")
-
-# 尝试从PIL导入ImageSequence（用于某些特殊格式处理）
-try:
-    from PIL import ImageSequence
-except ImportError:
-    pass
-
 class WatermarkCLI:
     def __init__(self):
         # 解析命令行参数
@@ -48,42 +32,22 @@ class WatermarkCLI:
         os.makedirs(self.output_dir, exist_ok=True)
         
         # 支持的图片格式
-        self.supported_formats = ['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.heic']
+        self.supported_formats = ['.jpg', '.jpeg', '.png', '.bmp', '.gif']
     
     def open_image(self, image_path):
-        """打开图片，支持HEIC格式"""
+        """打开图片，支持指定的图片格式"""
         file_ext = os.path.splitext(image_path)[1].lower()
         
-        # 首先尝试直接使用PIL打开（Pillow 10.0+支持HEIC）
+        # 检查是否支持该格式
+        if file_ext not in self.supported_formats:
+            print(f"不支持的文件格式 '{file_ext}'，跳过处理图片 '{image_path}'")
+            return None
+        
+        # 尝试使用PIL打开图片
         try:
             image = Image.open(image_path)
             return image
         except Exception as pil_error:
-            # 如果是HEIC格式且PIL打开失败，尝试其他方法
-            if file_ext == '.heic':
-                print(f"PIL直接打开HEIC失败：{str(pil_error)}")
-                # 尝试使用pyheif
-                if has_pyheif:
-                    try:
-                        # 尝试使用pyheif读取
-                        heif_file = pyheif.read(image_path)
-                        # 将HEIC转换为PIL图像
-                        image = Image.frombytes(
-                            heif_file.mode, 
-                            heif_file.size, 
-                            heif_file.data, 
-                            "raw", 
-                            heif_file.mode, 
-                            heif_file.stride, 
-                        )
-                        return image
-                    except Exception as pyheif_error:
-                        print(f"使用pyheif打开HEIC图片 '{image_path}' 时出错：{str(pyheif_error)}")
-                else:
-                    print(f"提示：如需处理HEIC格式图片，请先安装系统依赖：brew install libheif")
-                    print(f"然后安装Python依赖：pip install pyheif")
-            
-            # 如果是其他格式或所有方法都失败
             print(f"无法打开图片 '{image_path}'：{str(pil_error)}")
             return None
     
@@ -100,39 +64,13 @@ class WatermarkCLI:
     
     def extract_exif_date(self, image_path):
         """从图片中提取EXIF信息中的拍摄日期"""
-        file_ext = os.path.splitext(image_path)[1].lower()
         
         try:
-            # 对于HEIC格式，我们需要特殊处理
-            if file_ext == '.heic' and has_pyheif:
-                try:
-                    # 先使用pyheif读取文件
-                    heif_file = pyheif.read(image_path)
-                    
-                    # 检查是否有EXIF数据
-                    if hasattr(heif_file, 'metadata') and heif_file.metadata:
-                        for metadata in heif_file.metadata:
-                            if metadata['type'] == 'Exif':
-                                # 尝试使用piexif解析EXIF数据
-                                try:
-                                    exif_dict = piexif.load(metadata['data'])
-                                    if 'Exif' in exif_dict and piexif.ExifIFD.DateTimeOriginal in exif_dict['Exif']:
-                                        date_bytes = exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal]
-                                        date_str = date_bytes.decode('utf-8', errors='replace')
-                                        if ':' in date_str:
-                                            date_parts = date_str.split(' ')[0].split(':')
-                                            if len(date_parts) >= 3:
-                                                return f"{date_parts[0]}年{date_parts[1]}月{date_parts[2]}日"
-                                except Exception as piexif_error:
-                                    print(f"使用piexif解析HEIC EXIF时出错：{str(piexif_error)}")
-                except Exception as e:
-                    print(f"使用pyheif读取HEIC时出错：{str(e)}")
-            
             # 尝试通用方法 - 先打开图片
             image = self.open_image(image_path)
             if image:
                 try:
-                    # 对于普通格式，尝试使用PIL的_getexif方法
+                    # 尝试使用PIL的_getexif方法
                     exif_data = image._getexif()
                     if exif_data:
                         exif = {ExifTags.TAGS.get(tag, tag): value for tag, value in exif_data.items()}
@@ -145,19 +83,18 @@ class WatermarkCLI:
                 except Exception as pil_exif_error:
                     print(f"使用PIL读取EXIF时出错：{str(pil_exif_error)}")
             
-            # 尝试直接从文件读取EXIF（对于非HEIC格式）
-            if file_ext != '.heic':
-                try:
-                    exif_dict = piexif.load(image_path)
-                    if 'Exif' in exif_dict and piexif.ExifIFD.DateTimeOriginal in exif_dict['Exif']:
-                        date_bytes = exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal]
-                        date_str = date_bytes.decode('utf-8', errors='replace')
-                        if ':' in date_str:
-                            date_parts = date_str.split(' ')[0].split(':')
-                            if len(date_parts) >= 3:
-                                return f"{date_parts[0]}年{date_parts[1]}月{date_parts[2]}日"
-                except Exception as piexif_error:
-                    print(f"使用piexif读取EXIF时出错：{str(piexif_error)}")
+            # 尝试直接从文件读取EXIF
+            try:
+                exif_dict = piexif.load(image_path)
+                if 'Exif' in exif_dict and piexif.ExifIFD.DateTimeOriginal in exif_dict['Exif']:
+                    date_bytes = exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal]
+                    date_str = date_bytes.decode('utf-8', errors='replace')
+                    if ':' in date_str:
+                        date_parts = date_str.split(' ')[0].split(':')
+                        if len(date_parts) >= 3:
+                            return f"{date_parts[0]}年{date_parts[1]}月{date_parts[2]}日"
+            except Exception as piexif_error:
+                print(f"使用piexif读取EXIF时出错：{str(piexif_error)}")
             
             # 如果都失败，使用文件修改日期作为后备方案
             try:
@@ -233,7 +170,7 @@ class WatermarkCLI:
     def add_watermark(self, image_path, watermark_text):
         """为单张图片添加水印"""
         try:
-            # 打开图片，支持HEIC格式
+            # 打开图片
             image = self.open_image(image_path)
             if image is None:
                 print(f"无法打开图片 '{image_path}'")
@@ -248,38 +185,33 @@ class WatermarkCLI:
                 return None
             
             # 估算文本大小
-            try:
-                # 使用getbbox方法获取文本边界框（Pillow 8.0+）
-                text_bbox = draw.textbbox((0, 0), watermark_text, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-            except AttributeError:
-                # 旧版本Pillow使用textsize方法
-                text_width, text_height = draw.textsize(watermark_text, font=font)
+            text_bbox = draw.textbbox((0, 0), watermark_text, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
             
             # 计算水印位置
-            image_width, image_height = image.size
-            position = self.calculate_position(image_width, image_height, text_width, text_height)
+            position = self.calculate_position(image.width, image.height, text_width, text_height)
             
-            # 添加水印文本
+            # 添加水印
             draw.text(position, watermark_text, font=font, fill=self.args.font_color)
             
-            # 保存水印图片
-            original_filename = os.path.basename(image_path)
-            name, ext = os.path.splitext(original_filename)
-            output_path = os.path.join(self.output_dir, f"{name}_watermark{ext}")
+            # 保存图片
+            file_name = os.path.basename(image_path)
+            output_path = os.path.join(self.output_dir, file_name)
             
-            # 保存图片，保持原格式
-            if ext.lower() == '.png':
-                image.save(output_path, 'PNG')
-            elif ext.lower() in ['.jpg', '.jpeg']:
-                image.save(output_path, 'JPEG', quality=95)
-            elif ext.lower() == '.heic':
-                # 对于HEIC格式，保存为JPEG
-                output_path = output_path.replace('.heic', '.jpg').replace('.HEIC', '.jpg')
-                image.save(output_path, 'JPEG', quality=95)
+            # 根据原图片格式保存
+            image_format = image.format
+            if not image_format:
+                image_format = 'JPEG'  # 默认保存为JPEG格式
+            
+            # 如果是透明背景的PNG，保持透明度
+            if image_format == 'PNG' and image.mode == 'RGBA':
+                image.save(output_path, format=image_format)
             else:
-                image.save(output_path)
+                # 对于其他格式，转换为RGB
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
+                image.save(output_path, format=image_format)
             
             return output_path
         except Exception as e:
@@ -288,36 +220,43 @@ class WatermarkCLI:
     
     def process_all_images(self):
         """处理文件夹中的所有图片"""
+        # 获取所有图片文件
         image_files = self.get_image_files()
-        
         if not image_files:
-            print(f"错误：在文件夹 '{self.args.folder}' 中未找到支持的图片文件")
-            sys.exit(1)
+            print(f"在文件夹 '{self.args.folder}' 中未找到支持的图片文件")
+            return
         
-        total = len(image_files)
-        print(f"找到 {total} 个图片文件，开始处理...")
-        
+        total_files = len(image_files)
         success_count = 0
+        
+        print(f"开始处理 {total_files} 个图片文件...")
+        
         for i, image_path in enumerate(image_files, 1):
-            print(f"处理图片 {i}/{total}: {os.path.basename(image_path)}")
+            print(f"处理图片 {i}/{total_files}: {os.path.basename(image_path)}")
             
-            # 提取拍摄日期作为水印
+            # 提取拍摄日期作为水印文本
             watermark_text = self.extract_exif_date(image_path)
             
-            # 添加水印并保存
-            output_path = self.add_watermark(image_path, watermark_text)
-            
-            if output_path:
-                print(f"  ✓  已保存：{os.path.basename(output_path)}")
+            # 添加水印
+            result = self.add_watermark(image_path, watermark_text)
+            if result:
                 success_count += 1
+                print(f"  ✓ 水印添加成功：{os.path.basename(result)}")
             else:
-                print(f"  ✗  处理失败")
+                print(f"  ✗ 水印添加失败")
         
         print(f"\n处理完成！")
-        print(f"成功处理: {success_count}/{total}")
-        print(f"所有水印图片保存在: {self.output_dir}")
+        print(f"总文件数: {total_files}")
+        print(f"成功: {success_count}")
+        print(f"失败: {total_files - success_count}")
+        print(f"水印图片保存目录: {self.output_dir}")
 
 if __name__ == "__main__":
-    # 初始化并运行水印工具
-    watermark_tool = WatermarkCLI()
-    watermark_tool.process_all_images()
+    try:
+        watermark_cli = WatermarkCLI()
+        watermark_cli.process_all_images()
+    except KeyboardInterrupt:
+        print("\n程序被用户中断")
+    except Exception as e:
+        print(f"程序运行时出错：{str(e)}")
+        sys.exit(1)
